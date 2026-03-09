@@ -1,19 +1,29 @@
 # FixedToothDecayProject
 new version
 
+data and drafts
+https://drive.google.com/drive/folders/1cFnvtjBtaS-p99hQgCMu7KeNfEVWM2Gp
 
-- sans_modified.parquet - dane po preczytaniu danych buchwalda; z wyciętymi próbkami na granicy zdrowe/chore_sztucznie
-- 
+discussion and notes:
+- https://docs.google.com/document/d/1XsOTuKXdImdlv5nC_OHXEjU2BeNwqM5kngFqdzl1OXk/edit?tab=t.0
 
-Questions:
-- czy my dobrze labelujemy zęby zdrowe/ chore sztucznie? bo może się okazać że buchwald też dziwnie obrócił tego zęba
+# Description
+Tooth Decay Detection from Raman Spectroscopy
 
-- augmented są tylko chore naturalnie, czy jakoś zmieniamy tebelki bo obecnie 2 razy jest dokładnie ten sam model w zdrowe/chore sztucznie? ewentualnei augmentujemy też cgore sztucznie?
+This repository contains a machine learning pipeline for automatic detection of dental enamel decay using Raman spectroscopy. The goal is to enable non-invasive and objective diagnosis without manual interpretation of spectral data.
 
-- wbrew temu co w paperze napisaliśmy to my robimy 80/20 train test split co moż edawać data leak
+The dataset includes 10,249 Raman spectra from 43 tooth regions, with labels for healthy, artificially decayed, and naturally decayed enamel. Due to strong class imbalance, realistic data augmentation (noise, baseline drift, peak shifts, intensity scaling, and spectral warping) was applied to decayed samples.
 
-- normalisation w plotiwaniu budzi moje wątpliwości. to nie przywraca w pewien sposób tego co chcieliście żebym usunął że kolory na plotach nie mówią nic o predykcji między dwoma plotami? może normalizację między wszystkimi fieldami byłaby lepsza?
+Three modeling approaches were evaluated:
 
-- obecnie dla plotów używaliśmy do treningu wszystkich danych przez to dłużo wolniej to się trenuje, jak będziemy mieli więcej danych to może będziemy mogli z tego zrezygnować
+MiniRocket – fast feature extraction for spectral sequences with a Ridge classifier
 
-- czy dobrze rozumiem że w oryginalnym projekcie deepsety używają tylko polaryzacji v aboslutnie wszędzie? usunąłęm to.
+XGBoost peak classifier – interpretable model using manually extracted spectral features from the ν₁ PO₄³⁻ band (900–990 cm⁻¹)
+
+Deep Sets – neural architecture that processes spectra as sets of (wavenumber, intensity) pairs without interpolation
+
+Models were evaluated using a tooth-level train/test split to avoid data leakage. The best models achieved AUC values close to 1.0, showing strong diagnostic performance.
+
+Interpretability analysis (SHAP and Deep Sets mapping) confirmed that predictions rely on physically meaningful biomarkers such as peak position, FWHM, and Raman intensity.
+
+The results demonstrate the potential of combining Raman spectroscopy and machine learning for automated early dental diagnostics.
