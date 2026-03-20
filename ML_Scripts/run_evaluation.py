@@ -44,11 +44,23 @@ from model_minirocket import predict_with_minirocket
 from model_deepsets import predict_with_deepsets
 
 
-# =============================================================
-# HEATMAP PLOT
-# =============================================================
 
+#heatmap plotting utils
 def _make_heatmap_field(df, grid_res=400):
+    """Interpolate scattered predictions into a smooth heatmap field.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame with `Axis_0`, `Axis_1`, and `predicted` columns.
+    grid_res : int, default=400
+        Resolution of the generated regular grid along each axis.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]
+        Grid coordinates `(xi, yi)` and interpolated/smoothed values `zi`.
+    """
     x = df["Axis_1"].values
     y = df["Axis_0"].values
     z = df["predicted"].values.astype(float)
@@ -65,11 +77,32 @@ def _make_heatmap_field(df, grid_res=400):
 
 
 def plot_comparison_2x2(df_minirocket, df_peak, df_deepsets,
-                        tooth_image_path, title="Comparison of methods",
+                        tooth_image_path : str | None, title="Comparison of methods",
                         file_path=None, cmap="magma", show_contours=True):
-    """
-    2×2 panel: top-left = tooth photo, others = heatmaps for each model.
-    Any of df_minirocket / df_peak / df_deepsets may be None (panel skipped).
+    """Plot 2x2 comparison panel for tooth image and model heatmaps.
+
+    Parameters
+    ----------
+    df_minirocket : pandas.DataFrame | None
+        Tooth-42 predictions for MiniRocket.
+    df_peak : pandas.DataFrame | None
+        Tooth-42 predictions for peak-based XGBoost.
+    df_deepsets : pandas.DataFrame | None
+        Tooth-42 predictions for Deep Sets.
+    tooth_image_path : str | None
+        Path to a tooth image displayed in the top-left panel.
+    title : str, default="Comparison of methods"
+        Figure title.
+    file_path : str | None, default=None
+        Output path. If None, the figure is displayed instead of saved.
+    cmap : str, default="magma"
+        Colormap used for heatmap rendering.
+    show_contours : bool, default=True
+        Whether to draw contour lines over heatmaps.
+
+    Returns
+    -------
+    None
     """
     XMIN, XMAX, YMIN, YMAX = 0, 3500, 0, 3000
 
@@ -138,16 +171,27 @@ def plot_comparison_2x2(df_minirocket, df_peak, df_deepsets,
         plt.show()
 
 
-# =============================================================
-# TABLE CREATION
-# =============================================================
 
+# table creation
 def build_results_table(classes, data, deepsets_epochs=50, skip_deepsets=False):
-    """
-    Returns a DataFrame with rows = methods and columns = polarisation configs.
+    """Build model-comparison table for one class configuration.
 
-    Columns (multi-index):
-        (not augmented | augmented) × (v | vh+vv | v+vh+vv)
+    Parameters
+    ----------
+    classes : list[str]
+        Class labels to evaluate.
+    data : dict[str, object]
+        Data bundle returned by `load_all_data`.
+    deepsets_epochs : int, default=50
+        Number of epochs used for Deep Sets training.
+    skip_deepsets : bool, default=False
+        If True, excludes Deep Sets row from the output table.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Table with rows as model names and columns as augmentation/
+        polarization configurations.
     """
     clean_aug = data["clean_aug"]
     clean_nonaug = data["clean_nonaug"]
@@ -173,22 +217,30 @@ def build_results_table(classes, data, deepsets_epochs=50, skip_deepsets=False):
     print("\n  [Peak detection]")
     row = []
     for df_src, aug, pols in zip(df_peak_src, aug_flags, pol_options):
-        y_test, y_pred, y_proba = peak_classifier(
+        result = peak_classifier(
             df_src, augmented=aug, polarizations=pols,
             classes=classes, to_plot_data_42=False,
         )
-        row.append(evaluate_model(y_test, y_pred, y_proba) if y_test is not None else "-------")
+        if result is None or (isinstance(result, tuple) and result[0] is None):
+            row.append("-------")
+        else:
+            y_test, y_pred, y_proba = result
+            row.append(evaluate_model(y_test, y_pred, y_proba))
     results["peak_classifier"] = row
 
     # --- MiniRocket ---
     print("\n  [MiniRocket]")
     row = []
     for df_src, aug, pols in zip(df_mini_src, aug_flags, pol_options):
-        y_test, y_pred, y_proba = predict_with_minirocket(
+        result = predict_with_minirocket(
             df_src, augmented=aug, polarizations=pols,
             classes=classes, to_plot_data_42=False,
         )
-        row.append(evaluate_model(y_test, y_pred, y_proba) if y_test is not None else "-------")
+        if result is None or (isinstance(result, tuple) and result[0] is None):
+            row.append("-------")
+        else:
+            y_test, y_pred, y_proba = result
+            row.append(evaluate_model(y_test, y_pred, y_proba))
     results["minirocket"] = row
 
     # --- Deep Sets ---
@@ -197,11 +249,15 @@ def build_results_table(classes, data, deepsets_epochs=50, skip_deepsets=False):
         ds_row = []
         for i, (aug, pols) in enumerate(zip(aug_flags, pol_options)):
             df_src = raw_aug if aug else data["raw_nonaug"]
-            y_test, y_pred, y_proba = predict_with_deepsets(
+            result = predict_with_deepsets(
                 df_src, epochs=deepsets_epochs,
                 classes=classes, polarizations=pols, to_plot_data_42=False,
             )
-            ds_row.append(evaluate_model(y_test, y_pred, y_proba) if y_test is not None else "-------")
+            if result is None or (isinstance(result, tuple) and result[0] is None):
+                ds_row.append("-------")
+            else:
+                y_test, y_pred, y_proba = result
+                ds_row.append(evaluate_model(y_test, y_pred, y_proba))
         results["deepsets"] = ds_row
 
     final_df = pd.DataFrame(
@@ -213,9 +269,7 @@ def build_results_table(classes, data, deepsets_epochs=50, skip_deepsets=False):
 
 
 
-# =============================================================
-# FINAL COMPARISON PLOTS
-# =============================================================
+# Building final comparison plots
 
 # All polarisation configs — used for both tables and plots
 POLARIZATION_OPTIONS = [
@@ -240,6 +294,10 @@ def build_comparison_plot(classes, polarizations, data, deepsets_epochs=50, outp
     data          : dict from load_all_data()
     deepsets_epochs : int
     output_dir    : str | None
+
+    Returns
+    -------
+    None
     """
     if len(classes) == 3:
         return
@@ -278,11 +336,19 @@ def build_comparison_plot(classes, polarizations, data, deepsets_epochs=50, outp
     )
 
 
-# =============================================================
-# MAIN
-# =============================================================
+# Execution of the program starts here
+def main(args : argparse.Namespace):
+    """Run full evaluation pipeline and save result tables/plots.
 
-def main(args):
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+
+    Returns
+    -------
+    None
+    """
     print("Loading data ...")
     data = load_all_data()
 
@@ -323,7 +389,7 @@ def main(args):
 
     print("\n Evaluation complete.")
 
-
+# Execution of the program starts here
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run full model evaluation.")
     parser.add_argument("--no-plots",    action="store_true",

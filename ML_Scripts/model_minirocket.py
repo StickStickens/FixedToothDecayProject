@@ -27,11 +27,14 @@ from sktime.transformations.panel.rocket import MiniRocket
 from data_loader import load_all_data, evaluate_model
 
 
-# =============================================================
-# RIDGE WITH PROBA
-# =============================================================
 
 class RidgeClassifierWithProba(RidgeClassifierCV):
+    """
+    Extension of RidgeClassifierCV that implements predict_proba using the decision function.
+    Needed to ensure consistent API for evaluation, even though Ridge is not a probabilistic model.
+    Note: The probabilities are derived from the decision function using a softmax transformation,
+    which is a common approach for converting linear model outputs into probabilities in a multi-class setting.
+    """
     def predict_proba(self, X):
         d = self.decision_function(X)
         if d.ndim == 1:
@@ -39,21 +42,40 @@ class RidgeClassifierWithProba(RidgeClassifierCV):
         return softmax(d)
 
 
-# =============================================================
-# DATA PREPARATION
-# =============================================================
-
+# data preparation
 def _get_intensity_cols(df):
+    """Return names of intensity feature columns.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame with Raman intensity columns.
+
+    Returns
+    -------
+    list[str]
+        Column names starting with `intensity_at_`.
+    """
     return [c for c in df.columns if c.startswith("intensity_at_")]
 
 
-def prepare_dataset(df, augmented=False, polarizations=None):
-    """
-    Filter by polarisation(s), merge if multiple, and return
-    (train_df, test_df) each with an 'intensity_vector' column.
+def prepare_dataset(df : pd.DataFrame, augmented=False, polarizations=None):
+    """Prepare train and test sets for MiniRocket.
 
-    When multiple polarisations are requested the intensity vectors from
-    each are concatenated, effectively giving the classifier all channels.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame containing cleaned Raman features.
+    augmented : bool, default=False
+        Whether the input contains augmented rows.
+    polarizations : list[str] | None, default=None
+        Polarization channels to include. Defaults to `['v']`.
+
+    Returns
+    -------
+    tuple[pandas.DataFrame, pandas.DataFrame]
+        Train and test DataFrames, each containing an `intensity_vector`
+        column expected by MiniRocket.
     """
     useless = ["Typ_zeba", "ID_zeba", "ID_skanu", "Is_single_place",
                "Axis_0", "Axis_1", "time"]
@@ -72,13 +94,13 @@ def prepare_dataset(df, augmented=False, polarizations=None):
         ]
     else:
         # Merge polarisations side-by-side, then concatenate intensity vectors
-        merged = None
+        merged : pd.DataFrame = pd.DataFrame()
         for pol in polarizations:
             sub = df[df["Polaryzacja"] == pol].copy()
             rename = {c: f"{c}_{pol}" for c in intensity_cols_base}
-            sub = sub.rename(columns=rename)
+            sub = sub.rename(index=rename)
             key_cols = [c for c in useless if c in sub.columns]
-            if merged is None:
+            if merged.empty:
                 merged = sub
             else:
                 merged = merged.merge(
@@ -101,7 +123,7 @@ def prepare_dataset(df, augmented=False, polarizations=None):
     train_df = train_df.reset_index(drop=True)
     test_df = test_df.reset_index(drop=True)
 
-    return train_df, test_df, pol_df
+    return train_df, test_df
 
 
 # =============================================================
@@ -112,34 +134,43 @@ def predict_with_minirocket(
     df,
     augmented=False,
     polarizations=None,
-    classes=None,
+    classes : list[str] | None=None,
     to_plot_data_42=False,
 ):
-    """
-    Train MiniRocket + Ridge on df, evaluate, and optionally return
-    tooth-42 predictions for heatmap plotting.
+    """Train MiniRocket model and return evaluation outputs or tooth-42 predictions.
 
     Parameters
     ----------
-    df : DataFrame  – cleaned parquet (intensity_at_XXX columns)
-    augmented : bool
-    polarizations : list[str] | None
-    classes : list[str] | None  – filter to these Typ_zeba values
-    to_plot_data_42 : bool
-        If True, returns df_42 with 'predicted' column.
-        If False, returns (y_test, y_pred, y_proba).
+    df : pandas.DataFrame
+        Input DataFrame containing cleaned Raman features.
+    augmented : bool, default=False
+        Whether the input contains augmented rows.
+    polarizations : list[str] | None, default=None
+        Polarization channels to include. Defaults to `['v']`.
+    classes : list[str] | None, default=None
+        Optional class subset from `Typ_zeba`.
+    to_plot_data_42 : bool, default=False
+        If True, return tooth-42 DataFrame with a `predicted` column for
+        heatmap plotting.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray] | pandas.DataFrame | None
+        Returns `(y_test, y_pred, y_proba)` when `to_plot_data_42` is False.
+        Returns a tooth-42 DataFrame when `to_plot_data_42` is True, or None
+        if tooth 42 is not available.
     """
     polarizations = polarizations or ["v"]
 
     df_copy = df[df["Typ_zeba"].isin(classes)].copy() if classes else df.copy()
     print("classes", classes)
-    print("comparison", df_copy["Typ_zeba"].nunique(), len(classes))
+    print("comparison", df_copy["Typ_zeba"].nunique(), len(classes) if classes else 2)
     if df_copy["Typ_zeba"].nunique() < len(classes) if classes else 2:
         return (None, None, None) if not to_plot_data_42 else None
 
-    train_df, test_df, full_pol_df = prepare_dataset(df_copy, augmented, polarizations)
+    train_df, test_df = prepare_dataset(df_copy, augmented, polarizations)
 
-    print("comparison2", train_df["Typ_zeba"].nunique(), len(classes))
+    print("comparison2", train_df["Typ_zeba"].nunique(), len(classes) if classes else 2)
     if train_df["Typ_zeba"].nunique() < len(classes) if classes else 2 or test_df["Typ_zeba"].nunique() < len(classes) if classes else 2:
         return (None, None, None) if not to_plot_data_42 else None
 
@@ -190,10 +221,7 @@ def predict_with_minirocket(
     return df_42
 
 
-# =============================================================
-# STANDALONE
-# =============================================================
-
+# Execution of the program starts here
 if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.dirname(__file__))

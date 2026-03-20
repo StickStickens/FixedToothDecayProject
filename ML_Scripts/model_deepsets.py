@@ -27,6 +27,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import os, random
+from typing import Any, cast
 import numpy as np
 import pandas as pd
 import torch
@@ -41,9 +42,7 @@ from tqdm import tqdm
 from data_loader import load_all_data, evaluate_model
 
 
-# =============================================================
 # REPRODUCIBILITY
-# =============================================================
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -66,18 +65,21 @@ MIN_PEAK_DISTANCE_CM = 100
 REL_PROMINENCE = 0.05
 
 
-# =============================================================
 # PEAK DETECTION
-# =============================================================
 
-def find_significant_peaks(row):
-    """
-    Detect significant peaks in a raw spectrum row.
-    Returns (list of peak-feature dicts, smoothed intensity array).
+def find_significant_peaks(row: pd.Series) -> tuple[list[dict[str, float]], np.ndarray]:
+    """Detect significant peaks in a single spectrum row.
 
-    Accepts rows with either:
-      - 'Wavenumbers' + 'Intensities' columns  (raw parquet)
-      - 'intensity_at_XXX' columns             (cleaned parquet)
+    Parameters
+    ----------
+    row : pandas.Series
+        Spectrum row containing either `Wavenumbers`/`Intensities` or
+        `intensity_at_XXX` columns.
+
+    Returns
+    -------
+    tuple[list[dict[str, float]], numpy.ndarray]
+        Peak descriptors and the smoothed intensity array.
     """
     if "Wavenumbers" in row.index and "Intensities" in row.index:
         w = np.array(row["Wavenumbers"])
@@ -124,21 +126,24 @@ def find_significant_peaks(row):
 # MULTI-POLARISATION FEATURE EXTRACTION
 # =============================================================
 
-def _extract_features_multipol(df, polarizations):
-    """
-    For each unique scan position (ID_zeba, ID_skanu, Axis_0, Axis_1),
-    collect peaks from every requested polarisation, tag each peak with a
-    numeric pol_id, and concatenate into one set.
+def _extract_features_multipol(
+    df: pd.DataFrame,
+    polarizations: list[str],
+) -> tuple[list[list[dict[str, float]]], list[str], list[dict[str, Any]], list[str]]:
+    """Extract per-scan peak features for selected polarization channels.
 
-    When only one polarisation is requested, pol_id is NOT added (matches
-    original notebook behaviour, 5 features per peak instead of 6).
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame containing spectra and metadata columns.
+    polarizations : list[str]
+        Polarization channels to process, e.g. `['v']` or `['vh', 'vv']`.
 
     Returns
     -------
-    X            : list[list[dict]]  -- one entry per scan position
-    y            : list[str]         -- label
-    meta         : list[dict]        -- ID_zeba, Axis_0, Axis_1 for plotting
-    feature_keys : list[str]         -- ordered feature names used
+    tuple[list[list[dict[str, float]]], list[str], list[dict[str, Any]], list[str]]
+        Tuple containing combined peak features, labels, plotting metadata,
+        and ordered feature keys.
     """
     use_pol_id   = len(polarizations) > 1
     feature_keys = FEATURE_KEYS_BASE + (["pol_id"] if use_pol_id else [])
@@ -183,7 +188,15 @@ def _extract_features_multipol(df, polarizations):
 # =============================================================
 
 class PeakDataset(Dataset):
-    def __init__(self, X_list, y_array, feature_keys, max_peaks):
+    """Dataset of padded peak-feature sets for Deep Sets training."""
+
+    def __init__(
+        self,
+        X_list: list[list[dict[str, float]]],
+        y_array: np.ndarray,
+        feature_keys: list[str],
+        max_peaks: int,
+    ):
         self.max_peaks    = max_peaks
         self.num_features = len(feature_keys)
         self.feature_keys = feature_keys
@@ -200,10 +213,10 @@ class PeakDataset(Dataset):
                 arr = np.zeros((0, self.num_features), dtype=np.float32)
             self.X.append(arr)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.y)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         peaks = self.X[idx]
         n     = peaks.shape[0]
         if n < self.max_peaks:
@@ -219,7 +232,9 @@ class PeakDataset(Dataset):
 # =============================================================
 
 class BalancedBatchSampler:
-    def __init__(self, idx_classes, batch_size, num_batches):
+    """Balanced class sampler for mini-batches."""
+
+    def __init__(self, idx_classes: list[np.ndarray], batch_size: int, num_batches: int):
         self.idx_classes = idx_classes
         self.batch_size  = batch_size
         self.per_class   = batch_size // len(idx_classes)
@@ -238,7 +253,7 @@ class BalancedBatchSampler:
             np.random.shuffle(batch)
             yield batch
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.num_batches
 
 
@@ -247,6 +262,8 @@ class BalancedBatchSampler:
 # =============================================================
 
 class DeepSetsImproved(nn.Module):
+    """Permutation-invariant Deep Sets classifier for peak features."""
+
     def __init__(self, num_features=5, phi_dim=32, rho_dim=32,
                  num_classes=3, emb_dim=4, dropout=0.45):
         super().__init__()
@@ -276,7 +293,7 @@ class DeepSetsImproved(nn.Module):
             nn.Linear(rho_dim, num_classes),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         mask    = (x.abs().sum(dim=2, keepdim=True) != 0).float()
         x       = x * mask + self.no_peak_emb * (1 - mask)
         emb     = torch.cat(
@@ -295,11 +312,11 @@ class DeepSetsImproved(nn.Module):
 # =============================================================
 
 def predict_with_deepsets(
-    df,
-    epochs=100,
-    classes=None,
-    polarizations=None,
-    to_plot_data_42=False,
+    df: pd.DataFrame,
+    epochs: int = 100,
+    classes: list[str] | None = None,
+    polarizations: list[str] | None = None,
+    to_plot_data_42: bool = False,
 ):
     """
     Train a Deep Sets model on df, evaluate, and optionally return
@@ -307,32 +324,42 @@ def predict_with_deepsets(
 
     Parameters
     ----------
-    df            : DataFrame -- raw parquet (Wavenumbers / Intensities columns)
-    epochs        : int
-    classes       : list[str] | None
-    polarizations : list[str] | None
+    df : pandas.DataFrame
+        Raw parquet-like DataFrame with `Wavenumbers` and `Intensities`.
+    epochs : int, default=100
+        Number of training epochs.
+    classes : list[str] | None, default=None
+        Optional subset of `Typ_zeba` classes to include.
+    polarizations : list[str] | None, default=None
         Defaults to ['v'] to match the original notebook.
         For multi-pol, peaks from each channel are merged into one set
         and each peak receives an extra pol_id feature.
-    to_plot_data_42 : bool
+    to_plot_data_42 : bool, default=False
         If True  -> returns df_42 with 'predicted' column (Axis_0, Axis_1).
         If False -> returns (y_test, y_pred, y_proba).
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray] | pandas.DataFrame | None
+        Test labels/predictions/probabilities for evaluation, or tooth-42
+        prediction DataFrame for plotting, depending on `to_plot_data_42`.
     """
     polarizations = polarizations or ["v"]
+    class_count = len(classes) if classes is not None else 2
     n_pols        = len(polarizations)
     max_peaks     = MAX_PEAKS_PER_POL * n_pols   # 5, 10, or 15
 
     # Separate tooth-42 before any class filtering
-    df_42_full = df[df["ID_zeba"] == 42].reset_index(drop=True)
+    df_42_full = cast(pd.DataFrame, df[df["ID_zeba"] == 42].reset_index(drop=True))
 
     if classes:
-        df = df[df["Typ_zeba"].isin(classes)].reset_index(drop=True)
+        df = cast(pd.DataFrame, df[df["Typ_zeba"].isin(classes)].reset_index(drop=True))
 
-    df_no42 = df[df["ID_zeba"] != 42].reset_index(drop=True)
+    df_no42 = cast(pd.DataFrame, df[df["ID_zeba"] != 42].reset_index(drop=True))
 
     print("classes", classes)
-    print("comparison", df_no42["Typ_zeba"].nunique(), len(classes))
-    if df_no42["Typ_zeba"].nunique() < len(classes) if classes else 2:
+    print("comparison", df_no42["Typ_zeba"].nunique(), class_count)
+    if df_no42["Typ_zeba"].nunique() < class_count:
         return (None, None, None) if not to_plot_data_42 else None
 
     # --- Feature extraction ---
@@ -426,7 +453,8 @@ def predict_with_deepsets(
 
     # --- Tooth-42 predictions ---
     disease_class        = 1 if le_42.classes_[0] == "Zdrowe" else 0
-    test_probs, rows_keep = [], []
+    test_probs: list[np.ndarray | float] = []
+    rows_keep: list[int] = []
 
     with torch.no_grad():
         for Xb, _ in test_42_loader:
@@ -445,10 +473,10 @@ def predict_with_deepsets(
 
     df_42_out = pd.DataFrame([meta_42[i] for i in rows_keep])
 
-    preds_col = []
+    preds_col: list[float] = []
     for prob in test_probs:
-        p = np.atleast_1d(prob)
-        preds_col.append(p[disease_class] if len(p) > disease_class else float(prob))
+        p = np.atleast_1d(prob).astype(float)
+        preds_col.append(float(p[disease_class]) if len(p) > disease_class else float(p[0]))
 
     df_42_out["predicted"] = 1 - np.array(preds_col)
     return df_42_out
@@ -476,10 +504,15 @@ if __name__ == "__main__":
         print(f"Classes: {classes}")
         for pols in polarization_options:
             print(f"\n  Polarisations: {pols}")
-            y_test, y_pred, y_proba = predict_with_deepsets(
+            result = predict_with_deepsets(
                 raw_aug, epochs=50, classes=classes,
                 polarizations=pols, to_plot_data_42=False,
             )
+            if result is None:
+                print("  -------")
+                continue
+
+            y_test, y_pred, y_proba = result
             if y_test is None:
                 print("  -------")
             else:

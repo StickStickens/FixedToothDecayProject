@@ -28,23 +28,55 @@ from xgboost import XGBClassifier
 from data_loader import load_all_data, evaluate_model
 
 
-# =============================================================
-# PEAK FITTING
-# =============================================================
+#fitting peaks
 
 def gaussian(x, a, x0, sigma):
+    """Evaluate a Gaussian peak profile.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        X-axis values.
+    a : float
+        Peak amplitude.
+    x0 : float
+        Peak center.
+    sigma : float
+        Standard deviation.
+
+    Returns
+    -------
+    numpy.ndarray
+        Gaussian values evaluated at `x`.
+    """
     return a * np.exp(-(x - x0) ** 2 / (2 * sigma ** 2))
 
 
 def lorentzian(x, a, x0, gamma):
+    """Lorentzian function."""
     return a * (gamma ** 2 / ((x - x0) ** 2 + gamma ** 2))
 
 
 def pseudo_voigt(x, a, x0, sigma, eta, c):
+    """Pseudo-Voigt function: a linear combination of Gaussian and Lorentzian."""
     return eta * lorentzian(x, a, x0, sigma) + (1 - eta) * gaussian(x, a, x0, sigma) + c
 
 
 def detect_describe_peak(intensities, wavenumbers):
+    """Detect and fit the dominant peak with a pseudo-Voigt profile.
+
+    Parameters
+    ----------
+    intensities : array-like
+        Intensity values for a single spectrum.
+    wavenumbers : array-like
+        Wavenumber axis values for the same spectrum.
+
+    Returns
+    -------
+    dict[str, float] | None
+        Extracted peak features, or None when fitting fails.
+    """
     intensities = np.array(intensities, dtype=float)
     peaks, _ = find_peaks(intensities)
     if len(peaks) == 0:
@@ -95,18 +127,26 @@ def detect_describe_peak(intensities, wavenumbers):
     }
 
 
-# =============================================================
-# FEATURE EXTRACTION
-# =============================================================
 
 def _get_intensity_array(row, intensity_cols, wavenumbers_list):
+    """Helper function to convert intensity columns into a single array."""
     return row[intensity_cols].to_numpy(dtype=float)
 
 
 def peak_detection_transform(df, augmented=False):
-    """
-    For each row, fit a pseudo-Voigt to the dominant peak and return
-    a feature DataFrame.
+    """Extract peak-based features from cleaned Raman spectra.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing `intensity_at_XXX` columns and metadata.
+    augmented : bool, default=False
+        Whether `augmentation_type` should be included in output metadata.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Feature DataFrame with peak descriptors and metadata columns.
     """
     intensity_cols = [c for c in df.columns if c.startswith("intensity_at_")]
     wavenumbers = [int(c.split("_")[-1]) for c in intensity_cols]
@@ -150,9 +190,23 @@ def peak_detection_transform(df, augmented=False):
 
 
 def merge_polarizations(df, augmented=False, polarizations=None):
-    """
-    Transform each polarisation separately, then inner-join on
-    the metadata columns to produce a combined feature table.
+    """Merge peak features from selected polarization channels.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing `intensity_at_XXX` columns and metadata.
+    augmented : bool, default=False
+        Whether `augmentation_type` participates in merge keys.
+    polarizations : list[str] | None, default=None
+        Polarization channels to include. If None or empty, no merge is done
+        and single-channel peak features are returned.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Peak-feature table merged by metadata across selected channels.
+
     """
     useless = ["ID_zeba", "ID_skanu", "Axis_0", "Axis_1", "Typ_zeba"]
     if augmented:
@@ -183,17 +237,14 @@ def merge_polarizations(df, augmented=False, polarizations=None):
     return result
 
 
-# =============================================================
-# TRAIN / PREDICT
-# =============================================================
 
 def peak_classifier(
-    df,
-    augmented=False,
-    polarizations=None,
-    classes=None,
+    df : pd.DataFrame,
+    augmented = False,
+    polarizations = None,
+    classes : list[str] | None = None,
     to_plot_data_42=False,
-):
+) -> None | tuple[np.ndarray, np.ndarray, np.ndarray] | pd.Series:
     """
     Train an XGBoost classifier on peak features.
 
@@ -220,7 +271,7 @@ def peak_classifier(
         return (None, None, None) if not to_plot_data_42 else None
 
     df_features = merge_polarizations(df_copy, augmented, polarizations)
-    print("comparison2", df_features["Typ_zeba"].nunique(), len(classes))
+    print("comparison2", df_features["Typ_zeba"].nunique(), len(classes) if classes else 2)
     if df_features.empty or df_features["Typ_zeba"].nunique() < len(classes) if classes else 2:
         print("Warning: Not enough classes present for classification. for parameters:", {
             "classes": classes,
@@ -236,7 +287,7 @@ def peak_classifier(
         useless.append("augmentation_type")
 
     df_no42 = df_features[df_features["ID_zeba"] != 42].reset_index(drop=True)
-    df_42 = df_features[df_features["ID_zeba"] == 42].reset_index(drop=True)
+    df_42  = df_features[df_features["ID_zeba"] == 42].reset_index(drop=True)
 
     encoder = LabelEncoder().fit(df_no42["Typ_zeba"])
     X = df_no42.drop(columns=useless)
@@ -296,10 +347,7 @@ def peak_classifier(
     return df_42
 
 
-# =============================================================
-# STANDALONE
-# =============================================================
-
+# Execution of the program starts here
 if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.dirname(__file__))
@@ -321,11 +369,12 @@ if __name__ == "__main__":
         for pols in polarisation_options:
             for aug, df in [(False, clean_nonaug), (True, clean_aug)]:
                 label = "aug" if aug else "nonaug"
-                y_test, y_pred, y_proba = peak_classifier(
+                result = peak_classifier(
                     df, augmented=aug, polarizations=pols, classes=classes, to_plot_data_42=False
                 )
-                if y_test is None:
+                if(result is None or result[0] is None):
                     print(f"  [{label}] pol={pols}: -------")
                 else:
+                    y_test, y_pred, y_proba = result
                     auc = evaluate_model(y_test, y_pred, y_proba)
                     print(f"  [{label}] pol={pols}: AUC={auc:.4f}" if isinstance(auc, float) else f"  [{label}] pol={pols}: {auc}")

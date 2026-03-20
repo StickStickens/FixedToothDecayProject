@@ -7,46 +7,40 @@ Loads the new-format parquet files and exposes the same logical dataframes
 that table_creator_v3.ipynb used, without needing the old split-by-polarisation
 files. The 'Polaryzacja' column is used for filtering at query time.
 
-Files required in Data/:
-  - scans_clean_augmented.parquet     (cleaned, has augmentation_type column)
-  - scans_clean_nonaugmented.parquet  (cleaned, no augmentation_type column)
-  - scans_augmented.parquet           (raw, has Wavenumbers/Intensities columns)
-  - scans_nonaugmented.parquet        (raw, has Wavenumbers/Intensities columns)
-  - detected_grad_42.csv              (axis remapping for tooth 42)
-  all of them will be created automatically by data scripts if missing data files found
+input files
+-----------------
+- scans_clean_augmented.parquet     (cleaned, has augmentation_type column)
+- scans_clean_nonaugmented.parquet  (cleaned, no augmentation_type column)
+- scans_augmented.parquet           (raw, has Wavenumbers/Intensities columns)
+- scans_nonaugmented.parquet        (raw, has Wavenumbers/Intensities columns)
+- detected_grad_42.csv              (axis remapping for tooth 42)
+all of them will be created automatically by data scripts if missing data files found
 """
 
 import os
 import pandas as pd
 import numpy as np
+from ..Utils.utils import find_project_root
+import warnings
 
-
-# -------------------------------------------------
-# ROOT FINDER
-# -------------------------------------------------
-def find_project_root(project_name="FixedToothDecayProject"):
-    current_path = os.path.abspath(os.path.dirname(__file__))
-    while True:
-        if os.path.basename(current_path) == project_name:
-            return current_path
-        parent = os.path.dirname(current_path)
-        if parent == current_path:
-            raise FileNotFoundError(f"Project root '{project_name}' not found")
-        current_path = parent
-
-
-# -------------------------------------------------
-# TOOTH-42 AXIS REMAPPING
-# -------------------------------------------------
 def build_axis_dict(data_dir):
-    """
-    Reads detected_grad_42.csv and returns a dict mapping
-    (original_axis_1, original_axis_0) -> ((new_axis_0, new_axis_1), grad_value).
-    Returns None if the file is missing.
+    """Build axis remapping dictionary for tooth 42 from CSV data.
+
+    Parameters
+    ----------
+    data_dir : str
+        Path to the `Data` directory.
+
+    Returns
+    -------
+    dict[tuple[float, float], tuple[tuple[float, float], float]] | None
+        Mapping `(original_axis_1, original_axis_0)` to
+        `((new_axis_0, new_axis_1), grad_value)`. Returns None when the CSV
+        file is missing.
     """
     csv_path = os.path.join(data_dir, "detected_grad_42.csv")
     if not os.path.exists(csv_path):
-        print(f"WARNING: {csv_path} not found – tooth-42 axis remapping will be skipped.")
+        warnings.warn(f"WARNING: {csv_path} not found – tooth-42 axis remapping will be skipped.")
         return None
 
     extra = pd.read_csv(csv_path)
@@ -56,9 +50,21 @@ def build_axis_dict(data_dir):
 
 
 def change_axis_and_label_for_42(df, axis_dict):
-    """
-    Remaps Axis_0 / Axis_1 for tooth 42 in-place and sets its Typ_zeba to 'Zdrowe'.
-    Does nothing if axis_dict is None.
+    """Remap axis coordinates and labels for tooth 42.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame with `ID_zeba`, `Axis_0`, `Axis_1`, and `Typ_zeba` columns.
+    axis_dict : dict | None
+        Mapping `(original_axis_1, original_axis_0)` to
+        `((new_axis_0, new_axis_1), grad_value)`. If None, no remapping is
+        applied.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Modified DataFrame with remapped axes and updated label for tooth 42.
     """
     if axis_dict is None:
         return df
@@ -85,24 +91,21 @@ def change_axis_and_label_for_42(df, axis_dict):
     return df
 
 
-# -------------------------------------------------
-# MAIN LOADER
-# -------------------------------------------------
+
 def load_all_data(apply_axis_remap=True):
-    """
-    Returns a dict with all dataframes needed by the model scripts:
+    """Load cleaned and raw datasets used by model scripts.
 
-    Cleaned (intensity_at_XXX columns — for MiniRocket & Peak detection):
-        'clean_aug'      – augmented, all polarisations
-        'clean_nonaug'   – non-augmented, all polarisations
+    Parameters
+    ----------
+    apply_axis_remap : bool, default=True
+        If True, applies tooth-42 axis remapping using `detected_grad_42.csv`.
 
-    Raw (Wavenumbers / Intensities columns — for DeepSets):
-        'raw_aug'        – augmented, all polarisations
-        'raw_nonaug'     – non-augmented, all polarisations
-
-    Also returns:
-        'data_dir'       – path to Data/ folder
-        'tooth_image'    – path to tooth image (zab_og.png or image.png), or None
+    Returns
+    -------
+    dict[str, object]
+        Dictionary with loaded DataFrames and useful paths. Keys include
+        `clean_aug`, `clean_nonaug`, `raw_aug`, `raw_nonaug`, `data_dir`,
+        `root`, and `tooth_image`.
     """
     root = find_project_root()
     data_dir = os.path.join(root, "Data")
@@ -151,16 +154,3 @@ def load_all_data(apply_axis_remap=True):
         "root": root,
         "tooth_image": tooth_image,
     }
-
-
-# -------------------------------------------------
-# SHARED METRIC
-# -------------------------------------------------
-def evaluate_model(y_test, y_pred, y_proba):
-    """Weighted OvO ROC-AUC."""
-    from sklearn.metrics import roc_auc_score
-    n_classes = y_proba.shape[1]
-    y_bin = np.stack([(y_test == i).astype(np.int32) for i in range(n_classes)], axis=1)
-    if len(np.unique(y_bin)) <= 1:
-        return "-----"
-    return roc_auc_score(y_bin, y_proba, average="weighted", multi_class="ovo")
