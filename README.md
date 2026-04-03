@@ -27,3 +27,6 @@ Models were evaluated using a tooth-level train/test split to avoid data leakage
 Interpretability analysis (SHAP and Deep Sets mapping) confirmed that predictions rely on physically meaningful biomarkers such as peak position, FWHM, and Raman intensity.
 
 The results demonstrate the potential of combining Raman spectroscopy and machine learning for automated early dental diagnostics.
+
+<img width="609" height="523" alt="image" src="https://github.com/user-attachments/assets/e6f1cb07-d823-4952-8de4-e087c4c4abe0" />
+
